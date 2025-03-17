@@ -8,29 +8,52 @@ type
     filename*: string
     charset*: string
 
-proc qpDecode*(input: string): string =
-  result = newStringOfCap(input.len)
-  var i = 0
-  while i < input.len:
-    case input[i]
-    of '=':
-      if i+2 < input.len:
-        let hex = input.substr(i+1, i+2)
-        try:
-          result.add chr(parseHexInt(hex))
-          i += 2
-        except:
-          result.add '='
-      elif i+1 < input.len and input[i+1] == '\n':
-        i += 1
-      i += 1
-    of '_':
-      result.add ' '
-    else:
-      result.add input[i]
-    i += 1
 
-proc decodeHeader*(header: string): string =
+proc decodeQuotedPrintable(s: string): string =
+  ## Decodes a quoted-printable encoded string
+  var i = 0
+  var output = newSeq[byte]()
+  
+  while i < s.len:
+    if s[i] == '=':
+      if i + 1 >= s.len:
+        output.add('='.byte)
+        inc i
+        continue
+      
+      # Handle soft line breaks
+      if s[i+1] == '\r' and i + 2 < s.len and s[i+2] == '\n':
+        i += 3  # Skip =, CR, LF
+      elif s[i+1] == '\n':
+        i += 2  # Skip = and LF
+      else:
+        if i + 2 >= s.len:
+          output.add('='.byte)
+          output.add(s[i+1].byte)
+          i += 2
+          continue
+        
+        let hexStr = s.substr(i+1, i+2)
+        try:
+          let val = parseHexInt(hexStr).byte
+          output.add(val)
+          i += 3
+        except ValueError:
+          # Invalid hex sequence, preserve original
+          output.add('='.byte)
+          output.add(s[i+1].byte)
+          output.add(s[i+2].byte)
+          i += 3
+    else:
+      output.add(s[i].byte)
+      inc i
+  
+  # Convert byte sequence to string
+  result = newString(output.len)
+  for j in 0..<output.len:
+    result[j] = output[j].char
+
+proc decodeHeader(header: string): string =
   var
     buffer = ""
     currentPos = 0
@@ -79,7 +102,7 @@ proc decodeHeader*(header: string): string =
           of 'B':
             decode(payload)
           of 'Q':
-            qpDecode(payload.replace("_", " "))
+            decodeQuotedPrintable(payload.replace("_", " "))
           else:
             payload
         except:
@@ -122,32 +145,10 @@ proc parsePartContent(part: EmailPart, lines: var seq[string], i: var int, bound
     except:
       part.content = contentBuffer
   of "quoted-printable":
-    part.content = qpDecode(contentBuffer.convert("UTF-8", charset))
+    part.content = decodeQuotedPrintable(contentBuffer.convert("UTF-8", charset))
   else:
     part.content = contentBuffer.convert(charset, "UTF-8")
 
-proc quotedPrintableDecode(s: string): string =
-  result = newStringOfCap(s.len)
-  var i = 0
-  while i < s.len:
-    if s[i] == '=':
-      if i+2 < s.len:
-        let hex = s.substr(i+1, i+2)
-        if hex == "\r\n" or hex == "\n":  # Soft line break
-          i += 3
-          continue
-        try:
-          result.add(char(parseHexInt(hex)))
-          i += 3
-        except:
-          result.add('=')
-          i += 1
-      else:
-        result.add('=')
-        i += 1
-    else:
-      result.add(s[i])
-      i += 1
 
 proc parseEmail*(content: string): EmailPart =
   result = EmailPart(headers: initTable[string, string](), parts: @[])
@@ -164,7 +165,7 @@ proc parseEmail*(content: string): EmailPart =
     if line.len == 0:
       # End of headers
       if currentKey != "":
-        result.headers[currentKey] = decodeHeader(rawValue)
+        result.headers[currentKey] = decodeHeader(rawValue).strip(leading = true, trailing = false)
       break
     
     if line[0] in {' ', '\t'}:
@@ -175,7 +176,7 @@ proc parseEmail*(content: string): EmailPart =
     else:
       # New header line - save previous header
       if currentKey != "":
-        result.headers[currentKey] = decodeHeader(rawValue)
+        result.headers[currentKey] = decodeHeader(rawValue).strip(leading = true, trailing = false)
       
       # Parse new header
       let colonPos = line.find(':')
@@ -191,7 +192,7 @@ proc parseEmail*(content: string): EmailPart =
 
   # Save the last header if any
   if currentKey != "":
-    result.headers[currentKey] = decodeHeader(rawValue)
+    result.headers[currentKey] = decodeHeader(rawValue).strip(leading = true, trailing = false)
 
   # Parse body
   let contentType = result.headers.getOrDefault("Content-Type", "")
@@ -218,7 +219,7 @@ proc parseEmail*(content: string): EmailPart =
           if colonPos != -1:
             let key = line[0..<colonPos].strip()
             let value = line[colonPos+1..^1].strip()
-            currentPart.headers[key] = decodeHeader(value)
+            currentPart.headers[key] = decodeHeader(value).strip
           i += 1
         i += 1
       else:
@@ -227,12 +228,12 @@ proc parseEmail*(content: string): EmailPart =
     result.content = lines[i..^1].join("\n")
     let encoding = result.headers.getOrDefault("Content-Transfer-Encoding", "7bit").toLowerAscii()
     let charset = result.headers.getOrDefault("Content-Type", "").split("charset=")[1].split(';')[0].strip(chars={'"'}).normalize
-    
+
     case encoding:
     of "base64":
       result.content = decode(result.content.convert("UTF-8", charset))
     of "quoted-printable":
-      result.content = qpDecode(result.content.convert("UTF-8", charset))
+      result.content = decodeQuotedPrintable(result.content.convert("UTF-8", charset))
     else:
       result.content = result.content.convert("UTF-8", charset)
 
