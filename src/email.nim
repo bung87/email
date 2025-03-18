@@ -110,7 +110,7 @@ proc decodeHeader(header: string): string =
       
       # Convert charset to UTF-8
       try:
-        buffer.add convert(decodedPayload, charset, "UTF-8")
+        buffer.add convert(decodedPayload, "UTF-8", charset)
       except:
         buffer.add decodedPayload
       
@@ -147,7 +147,7 @@ proc parsePartContent(part: EmailPart, lines: var seq[string], i: var int, bound
   of "quoted-printable":
     part.content = decodeQuotedPrintable(contentBuffer.convert("UTF-8", charset))
   else:
-    part.content = contentBuffer.convert(charset, "UTF-8")
+    part.content = contentBuffer.convert("UTF-8", charset)
 
 
 proc parseEmail*(content: string): EmailPart =
